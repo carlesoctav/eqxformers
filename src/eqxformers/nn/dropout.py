@@ -30,17 +30,17 @@ class Dropout(Module):
     p: float = eqx.field(static = True)
     inference: bool 
 
-
     def __init__(
         self,
         p: int,
         inference = False,
     ):
+        self.p = p
+        self.inference = inference
+
         if self.p >1 or self.p < 0:
             raise ValueError("Dropout probability must be between 0 and 1.")
 
-        self.p = p
-        self.inference = inference
 
 
     def __call__(

@@ -5,8 +5,8 @@ from ..modeling_utils import Module
 
 Initializer = jax.nn.initializers.Initializer
 
-ones_init = jax.nn.initializers.ones()
-zeros_init = jax.nn.initializers.zeros()
+one_init = jax.nn.initializers.ones
+zero_init = jax.nn.initializers.zeros
 
 class LayerNorm(Module):
     weight: Array | None
@@ -24,7 +24,7 @@ class LayerNorm(Module):
         elementwise_affine: bool = True,
         use_bias: bool = True,
         *,
-        initializer: Initializer = ones_init,  
+        initializer: Initializer = one_init,  
         key: PRNGKeyArray, 
     ):
         normalized_shape = (
@@ -37,7 +37,7 @@ class LayerNorm(Module):
             wkey, bkey = jax.random.split(key)
             self.weight = initializer(wkey, normalized_shape)
             if use_bias:
-                self.bias = zeros_init(bkey, normalized_shape, )
+                self.bias = zero_init(bkey, normalized_shape, )
             else:
                 self.bias = None
         else:

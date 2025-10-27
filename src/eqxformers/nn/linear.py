@@ -8,10 +8,11 @@ from jaxtyping import PRNGKeyArray
 Initializer = jax.nn.initializers.Initializer
 
 normal_init = jax.nn.initializers.normal()
+zero_init = jax.nn.initializers.zeros
 
 class Linear(Module):
     weight: Array
-    bias: Array
+    bias: Array | None
 
     in_features: int = eqx.field(static = True)
     out_features: int = eqx.field(static = True)
@@ -20,7 +21,7 @@ class Linear(Module):
 
 
     def __init__(
-        self
+        self,
         in_features: int,
         out_features: int,
         use_bias: bool = True,
@@ -33,6 +34,8 @@ class Linear(Module):
         self.weight = initializer(wkey, (out_features, in_features))
         if use_bias:
             self.bias = zero_init(bkey, (out_features, ))
+        else:
+            self.bias = None
 
         self.in_features = in_features
         self.out_features = out_features
