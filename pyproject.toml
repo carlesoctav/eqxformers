@@ -1,0 +1,24 @@
+[project]
+name = "eqxformers"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "equinox>=0.13.2",
+    "jax[tpu]>=0.8.0",
+    "jaxtyping>=0.3.3",
+    "transformers>=4.57.1",
+]
+
+[tool.ruff.lint]
+fixable = ["I001", "F401", "UP"]
+ignore = ["E402", "E721", "E731", "E741", "F722", "UP038", "E501"]
+select = ["E", "F", "I001", "UP"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+lines-after-imports = 2
+order-by-type = false
+
+
