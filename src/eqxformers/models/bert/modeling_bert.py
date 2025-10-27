@@ -452,7 +452,7 @@ class BertMLMHead(Module):
             key=head_key,
         )
 
-        self.tie_word_embeddings = getattr(config, "tie_word_embeddings", False)
+        self.tie_word_embeddings = getattr(config, "tie_word_embeddings", True)
         if self.tie_word_embeddings:
             self.lm_head = eqx.nn.Shared(
                 (embedding, lm_linear),
@@ -481,16 +481,14 @@ class BertMLMHead(Module):
         else:
             lm_linear = self.lm_head
 
-        batch, seq_length, hidden = hidden_states.shape
-        logits = lm_linear(hidden_states.reshape(-1, hidden))
-        logits = logits.reshape(batch, seq_length, -1)
+        logits = lm_linear(hidden_states)
         logits = logits + self.bias
         return self.maybe_prepare_output(logits)
 
 
 class BertForMaskedLM(Module):
     bert: BertModel
-    cls: BertMLMHead
+    mlm_head: BertMLMHead
     config: BertConfig | None = eqx.field(static=True)
 
     def __init__(
@@ -502,7 +500,7 @@ class BertForMaskedLM(Module):
     ):
         bert_key, head_key = jax.random.split(key, 2)
         self.bert = BertModel(config, key=bert_key, store_config=True)
-        self.cls = BertMLMHead(
+        self.mlm_head = BertMLMHead(
             config,
             self.bert.embeddings.word_embeddings,
             key=head_key,
@@ -538,5 +536,5 @@ class BertForMaskedLM(Module):
             key=bert_key,
         )
 
-        logits = self.cls(sequence_output, key=cls_key)
+        logits = self.mlm_head(sequence_output, key=cls_key)
         return self.maybe_prepare_output(logits)
