@@ -1,13 +1,12 @@
-import math
-from typing import Any, Callable, Dict, Tuple
+from collections.abc import Callable
+from typing import Any
 
 import jax.numpy as jnp
 from jaxtyping import Array
 from transformers import PretrainedConfig
-from ..utils import first_from
 
 
-RotaryInitFn = Callable[[Any, jnp.dtype], Tuple[Array, Array]]
+RotaryInitFn = Callable[[Any, jnp.dtype], tuple[Array, Array]]
 
 
 def _base_angles(dim: int, base: float, dtype: jnp.dtype) -> Array:
@@ -26,7 +25,7 @@ def r_from_inv(inv_freq: Array, seq_len: int, dtype: jnp.dtype) -> Array:
 def default_rope(
     config: PretrainedConfig,
     dtype: jnp.dtype = jnp.float32,
-) -> Tuple[Array, Array]:
+) -> tuple[Array, Array]:
     base = float(config.rope_theta)
     assert base > 1.0, f"rope_theta/base must be > 1, got {base}"
 
@@ -39,10 +38,7 @@ def default_rope(
 
     rot_dim = head_dim
 
-    seq_len = first_from(
-        getattr(config, "max_position_embeddings"),
-        error_msg="max_position_embeddings must be set for RoPE initialization.",
-    )
+    seq_len = getattr(config, "max_position_embeddings"),
     assert seq_len >= 1, f"seq_len must be >= 1, got {seq_len}"
 
     half = rot_dim // 2
@@ -58,7 +54,7 @@ def default_rope(
     return r_theta, attention_scaling
 
 
-ROPE_INIT_FUNCTIONS: Dict[str, RotaryInitFn] = {
+ROPE_INIT_FUNCTIONS: dict[str, RotaryInitFn] = {
     "default": default_rope,
 }
 

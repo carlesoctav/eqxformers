@@ -32,25 +32,15 @@ def or_masks(*mask_fns):
     return mask
 
 
-def vmap_bhqkv(mask_fn, without_head=False):
-    if without_head:
-        # Wrap mask_fn to ignore head dimension
-        def mask_fn_no_head(b, q, kv):
-            return mask_fn(b, None, q, kv) #(B, T, S)
+def vmap_bhqkv(mask_fn, with_head=False):
 
-        in_axess = [(None, None, 0), (None, 0, None), (0, None, None)]
-        fn = mask_fn_no_head
-    else:
-        in_axess = [
-            (None, None, None, 0),
-            (None, None, 0, None),
-            (None, 0, None, None),
-            (0, None, None, None),
-        ]
-        fn = mask_fn
+    fn = jax.vmap(mask_fn, in_axes = (None, None, None, 0)) #kv arange
+    fn = jax.vmap(fn, in_axes = (None, None, 0, None)) # q arange
 
-    for axes in in_axess:
-        fn = jax.vmap(fn, in_axes=axes)
+    if with_head:
+        fn = jax.vmap(fn, in_axes = (None, 0, None, None)) # h arange
+
+    fn = jax.vmap(fn, in_axes = (0, None, None, None))
 
     return fn
 
@@ -88,31 +78,31 @@ def make_bool_mask(
     q_length: int,
     kv_length: int,
     mask_function: MaskFn,
-    padding_mask: Bool[Array, "..."] | None = None,
+    padding_mask: Bool[Array, "B T"] | None = None,
     nheads: int | None = None,
-) -> Bool[Array, "..."]:
-    batch_arange = jnp.arange(batch_size, dtype=jnp.int32) if batch_size else None
+) -> Bool[Array, "B T S"] | Bool[Array, "B T N S"]:
+
+    batch_arange = jnp.arange(batch_size, dtype=jnp.int32) 
     q_arange = jnp.arange(q_length, dtype=jnp.int32)
     kv_arange = jnp.arange(kv_length, dtype=jnp.int32)
+    head_arange = jnp.arange(nheads, dtype = jnp.int32) if nheads else None
 
-    if nheads is None:
-        heads_arange = None
-        mask_output = vmap_bhqkv(mask_function, without_head=True)(
-            batch_arange, q_arange, kv_arange
-        )
-    else:
-        heads_arange = jnp.arange(nheads, dtype=jnp.int32)
-        mask_output = vmap_bhqkv(mask_function, without_head=False)(
-            batch_arange, heads_arange, q_arange, kv_arange
-        )
+    mask_output = vmap_bhqkv(
+        mask_function,
+        with_head= head_arange is not None, 
+    )(
+        batch_arange, head_arange, q_arange, kv_arange
+    )
+
+    mask_ndim = mask_output.ndim
 
     if padding_mask is not None:
-        if mask_output.ndim == 3:
-            expanded_padding_mask = padding_mask[:, None, :]
-            return jnp.asarray(mask_output & expanded_padding_mask, dtype=jnp.bool)
-        else:
-            expanded_padding_mask = padding_mask[:, None, None, :]
-            return mask_output & expanded_padding_mask
+        if mask_ndim == 3: #(B, T, S), (B, T)
+            return mask_output & padding_mask[:, :, None]
+        elif mask_ndim == 4:#(B, N, T, S), (B, T) -> (B, N, T, S) -> (B, T, N, S)
+            return (mask_output & padding_mask[:, None, :, None]).swap_axes(1, 2)
+
+        tp.assert_never(mask_output)
     else:
         return mask_output
 
@@ -152,6 +142,7 @@ def make_causal_mask(
         The computed causal attention mask,
     """
 
+    #Need to think more about maskign for inference but whatever
     B, T, H = input_embeds.shape
 
     mask_interface = ALL_MASK_ATTENTION_FUNCTIONS[mask_impl]
@@ -177,14 +168,14 @@ def make_causal_mask(
     return causal_mask
 
 
-def make_full_mask(
+def make_bidirectional_mask(
     mask_impl: str,
     input_embeds: Float[Array, "B T H"],
     attention_mask: Bool[Array, "..."] | None = None,
     segment_ids: Int[Array, "..."] | None = None,
-) -> Bool[Array, "B T T"] | BlockMask:
+) -> Bool[Array, "B T S"] | BlockMask | Bool[Array, "B T N S"]:
     """
-    Generates a mask for full attention.
+    Generates a mask for bidirectional attention. 
 
     Args:
     mask_impl : str

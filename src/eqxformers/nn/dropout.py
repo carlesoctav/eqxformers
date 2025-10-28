@@ -9,15 +9,15 @@ import equinox as eqx
 def dropout(
         x: Real[Array, "..."] ,
         dropout_rate: float,
-        inference: bool = False,
         *,
         key: PRNGKeyArray
 ):
-    if dropout_rate < 0.0 or dropout_rate >= 1.0:
-        raise ValueError("Dropout rate must be in the range [0.0, 1.0).")
-
-    if inference:
-        return x 
+    if dropout_rate < 0.0 or dropout_rate > 1.0:
+        raise ValueError("Dropout rate must be in the range [0.0, 1.0].")
+    if dropout_rate == 0.0:
+        return jnp.zeros_like(x)
+    if dropout_rate == 1.0:
+        return x
 
     keep_prob = 1.0 - dropout_rate
     keep_mask = jax.random.bernoulli(key, keep_prob, shape = x.shape)

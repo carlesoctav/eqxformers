@@ -1,28 +1,24 @@
-from __future__ import annotations
-
+import functools as ft
 import typing as tp
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Int, PRNGKeyArray
+import jax.tree_util as jtu
+from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 from transformers.models.bert.configuration_bert import BertConfig
 
-from ...masking_utils import make_full_mask
+from ...jax_utils import maybe_split_key, slice_out
+from ...masking_utils import make_bidirectional_mask
 from ...modeling_utils import Module
-from ...nn.attention import ALL_ATTENTION_FUNCTIONS
-from ...nn.dropout import Dropout
-from ...nn.embedding import Embedding
-from ...nn.linear import Linear
-from ...nn.normalisation import LayerNorm
-
-
-
-
-def _split_key(key: PRNGKeyArray | None, num: int) -> tuple[PRNGKeyArray | None, ...]:
-    if key is None:
-        return (None,) * num
-    return tuple(jax.random.split(key, num))
+from ...nn import (
+    AbstractSequentialModule,
+    ALL_ATTENTION_FUNCTIONS,
+    Dropout,
+    Embedding,
+    LayerNorm,
+    Linear,
+)
 
 
 class BertEmbeddings(Module):
@@ -65,8 +61,7 @@ class BertEmbeddings(Module):
         *,
         key: PRNGKeyArray | None = None,
     ) -> Float[Array, "B T H"]:
-        prepared = self.maybe_prepare_input(input_ids, position_ids, token_type_ids)
-        input_ids, position_ids, token_type_ids = prepared
+        input_ids, position_ids, token_type_ids = self.maybe_prepare_input(input_ids, position_ids, token_type_ids)
 
         embeddings = (
             self.word_embeddings(input_ids)
@@ -118,7 +113,7 @@ class BertSelfAttention(Module):
         self.head_dim = config.hidden_size // config.num_attention_heads
         self.dropout_rate = config.attention_probs_dropout_prob
         self.inference = False
-        self.attention_impl = getattr(config, "_attn_implementation", "sdpa")
+        self.attention_impl = getattr(config, "_attn_implementation", "eager") or "eager"
 
     def _shape_to_heads(
         self, x: Float[Array, "B T H"], batch_size: int
@@ -132,21 +127,17 @@ class BertSelfAttention(Module):
         *,
         key: PRNGKeyArray | None = None,
     ) -> Float[Array, "B T H"]:
-        prepared = self.maybe_prepare_input(hidden_states, attention_mask)
-        hidden_states, attention_mask = prepared
+
+        hidden_states, attention_mask = self.maybe_prepare_input(hidden_states, attention_mask) 
 
         batch_size, _seq_len, _hidden = hidden_states.shape
         query_layer = self._shape_to_heads(self.query(hidden_states), batch_size)
         key_layer = self._shape_to_heads(self.key(hidden_states), batch_size)
         value_layer = self._shape_to_heads(self.value(hidden_states), batch_size)
 
-        if attention_mask is not None:
-            if attention_mask.ndim != 3:
-                raise ValueError("attention_mask must have shape (B, T, S)")
-            attention_mask = attention_mask[:, None, :, :]
 
-        attention_fn = ALL_ATTENTION_FUNCTIONS[self.attention_impl]
-        attn_output = attention_fn(
+        attention_interface = ALL_ATTENTION_FUNCTIONS[self.attention_impl]
+        attn_output = attention_interface(
             query_layer,
             key_layer,
             value_layer,
@@ -186,8 +177,7 @@ class BertSelfOutput(Module):
         *,
         key: PRNGKeyArray | None = None,
     ) -> Float[Array, "B T H"]:
-        prepared = self.maybe_prepare_input(hidden_states, input_tensor)
-        hidden_states, input_tensor = prepared
+        hidden_states, input_tensor = self.maybe_prepare_input(hidden_states, input_tensor) 
 
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states, key=key)
@@ -211,10 +201,10 @@ class BertAttention(Module):
         *,
         key: PRNGKeyArray | None = None,
     ) -> Float[Array, "B T H"]:
-        prepared = self.maybe_prepare_input(hidden_states, attention_mask)
-        hidden_states, attention_mask = prepared
 
-        attn_key, output_key = _split_key(key, 2)
+        hidden_states, attention_mask = self.maybe_prepare_input(hidden_states, attention_mask) 
+        attn_key, output_key = maybe_split_key(key, 2)
+
         attention_output = self.self_attention(
             hidden_states,
             attention_mask,
@@ -278,8 +268,7 @@ class BertOutput(Module):
         *,
         key: PRNGKeyArray | None = None,
     ) -> Float[Array, "B T H"]:
-        prepared = self.maybe_prepare_input(hidden_states, input_tensor)
-        hidden_states, input_tensor = prepared
+        hidden_states, input_tensor = self.maybe_prepare_input(hidden_states, input_tensor)
 
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states, key=key)
@@ -305,10 +294,10 @@ class BertLayer(Module):
         *,
         key: PRNGKeyArray | None = None,
     ) -> Float[Array, "B T H"]:
-        prepared = self.maybe_prepare_input(hidden_states, attention_mask)
-        hidden_states, attention_mask = prepared
 
-        attn_key, ffn_key = _split_key(key, 2)
+        attn_key, ffn_key = maybe_split_key(key, 2)
+        hidden_states, attention_mask = self.maybe_prepare_input(hidden_states, attention_mask) 
+
         attention_output = self.attention(
             hidden_states,
             attention_mask,
@@ -323,12 +312,27 @@ class BertLayer(Module):
         return self.maybe_prepare_output(layer_output)
 
 
-class BertEncoder(Module):
-    layers: tuple[BertLayer, ...]
+class BertEncoder(Module, AbstractSequentialModule[BertLayer]):
+    layers: tuple[BertLayer, ...] | None | BertLayer
+    use_scan: bool = eqx.field(static = True, default = True)
 
     def __init__(self, config: BertConfig, *, key: PRNGKeyArray):
-        layer_keys = jax.random.split(key, config.num_hidden_layers)
-        self.layers = tuple(BertLayer(config, key=layer_key) for layer_key in layer_keys)
+        use_scan = getattr(config, "use_scan", True)
+        keys = jax.random.split(key, config.num_hidden_layers)
+
+        @eqx.filter_vmap
+        def vmap_layers(key):
+            return BertLayer(config, key = key)
+
+        if use_scan:
+            self.layers = vmap_layers(keys) 
+        else:
+            self.layers = (
+                BertLayer(config, key = keys[i]) for i in range (config.num_hidden_layers)
+            )
+
+
+        self.use_scan = use_scan
 
     def __call__(
         self,
@@ -337,22 +341,44 @@ class BertEncoder(Module):
         *,
         key: PRNGKeyArray | None = None,
     ) -> Float[Array, "B T H"]:
-        prepared = self.maybe_prepare_input(hidden_states, attention_mask)
-        hidden_states, attention_mask = prepared
+        hidden_states, attention_mask = self.maybe_prepare_input(hidden_states, attention_mask)
+        layer_keys = maybe_split_key(key, len(self.layers))
 
-        if key is not None:
-            layer_keys = jax.random.split(key, len(self.layers))
+        if not self.use_scan:
+            hidden_states = self.call_with_loop(hidden_states, attention_mask, key = layer_keys)
         else:
-            layer_keys = (None,) * len(self.layers)
-
-        for bert_layer, layer_key in zip(self.layers, layer_keys):
-            hidden_states = bert_layer(
-                hidden_states,
-                attention_mask,
-                key=layer_key,
-            )
+            hidden_states = self.call_with_scan(hidden_states, attention_mask, key = layer_keys) 
 
         return self.maybe_prepare_output(hidden_states)
+
+
+    def call_with_loop(self, init, *args, **kwargs):
+        carry = init
+        def do_loop(init, *args, **kwargs):
+            for i, layer in enumerate(self.layers):
+                block_args, block_kwargs = jtu.tree_map(ft.partial(slice_out, i), (args, kwargs)) 
+                carry = layer(carry, *block_args, **block_kwargs)
+                # should think about checkpointing this carry later :d
+            return carry
+
+        return do_loop(init, *args, **kwargs)
+
+
+
+    def call_with_scan(self, init, *args, **kwargs ):
+        pass
+
+        # still wip
+        # dynamic, static = eqx.partition(self.layers)
+        #
+        # def do_scan(init, xs):
+        #     dynamic, args, kwargs = xs
+        #     layer = combine(dynamic, static)
+        #     carry = layer(**args, **kwargs)
+        #     return carry, None
+        #
+        # hideen_states, _ = jax.lax.scan(do_scan, init, xs = (dynamic, args, kwargs))
+
 
 
 class BertModel(Module):
@@ -382,16 +408,17 @@ class BertModel(Module):
         *,
         key: PRNGKeyArray | None = None,
     ) -> Float[Array, "B T H"]:
-        prepared = self.maybe_prepare_input(
+
+        embed_key, encoder_key = maybe_split_key(key, 2)
+        input_ids, position_ids, token_type_ids, attention_mask, segment_ids = self.maybe_prepare_input(
             input_ids,
             position_ids,
             token_type_ids,
             attention_mask,
             segment_ids,
         )
-        input_ids, position_ids, token_type_ids, attention_mask, segment_ids = prepared
 
-        embed_key, encoder_key = _split_key(key, 2)
+
         hidden_states = self.embeddings(
             input_ids,
             position_ids,
@@ -399,8 +426,9 @@ class BertModel(Module):
             key=embed_key,
         )
 
-        mask_impl = getattr(self.config, "_attn_implementation", "sdpa") if self.config else "sdpa"
-        attention_mask = make_full_mask(
+        mask_impl = getattr(self.config, "_attn_implementation", "eager") or "eager"
+
+        attention_mask = make_bidirectional_mask(
             mask_impl,
             hidden_states,
             attention_mask,
@@ -421,7 +449,6 @@ class BertMLMHead(Module):
     layer_norm: LayerNorm
     activation: tp.Callable[[Array], Array]
     lm_head: Linear | eqx.nn.Shared
-    lm_head_linear: Linear
     bias: Array
     tie_word_embeddings: bool = eqx.field(static=True)
 
@@ -462,7 +489,6 @@ class BertMLMHead(Module):
         else:
             self.lm_head = lm_linear
 
-        self.lm_head_linear = lm_linear
         self.bias = jnp.zeros((config.vocab_size,), dtype=jnp.float32)
 
     def __call__(
@@ -495,8 +521,8 @@ class BertForMaskedLM(Module):
         self,
         config: BertConfig,
         *,
-        key: PRNGKeyArray,
         store_config: bool = True,
+        key: PRNGKeyArray,
     ):
         bert_key, head_key = jax.random.split(key, 2)
         self.bert = BertModel(config, key=bert_key, store_config=True)
@@ -512,9 +538,9 @@ class BertForMaskedLM(Module):
         input_ids: Int[Array, "B T"],
         position_ids: Int[Array, "B T"],
         token_type_ids: Int[Array, "B T"],
-        *,
-        attention_mask: Array | None = None,
+        attention_mask: Bool[Array, "B T"] | None = None, 
         segment_ids: Int[Array, "B T"] | None = None,
+        *,
         key: PRNGKeyArray | None = None,
     ) -> Float[Array, "B T V"]:
         prepared = self.maybe_prepare_input(
@@ -526,7 +552,7 @@ class BertForMaskedLM(Module):
         )
         input_ids, position_ids, token_type_ids, attention_mask, segment_ids = prepared
 
-        bert_key, cls_key = _split_key(key, 2)
+        bert_key, cls_key = maybe_split_key(key, 2)
         sequence_output = self.bert(
             input_ids,
             position_ids,

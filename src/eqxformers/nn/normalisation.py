@@ -1,3 +1,4 @@
+import jax.numpy as jnp
 import jax
 from jaxtyping import Array, Float, PRNGKeyArray
 import equinox as eqx
@@ -75,7 +76,7 @@ class LayerNorm(Module):
         axes = tuple(range(nd - k, nd))
         mean = jnp.mean(x, axis=axes, keepdims=True)
         var = jnp.var(x, axis=axes, keepdims=True)
-        inv = lax.rsqrt(jnp.maximum(var, 0.0) + self.eps)
+        inv = jax.lax.rsqrt(jnp.maximum(var, 0.0) + self.eps)
         y = (x - mean) * inv
 
         if self.weight is not None:
