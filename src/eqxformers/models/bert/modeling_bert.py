@@ -8,7 +8,7 @@ import jax.tree_util as jtu
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 from transformers.models.bert.configuration_bert import BertConfig
 
-from ...jax_utils import maybe_split_key, slice_out
+from ...jax_utils import maybe_split_key, slice_out, is_array_like_with_leading_size
 from ...masking_utils import make_bidirectional_mask
 from ...modeling_utils import Module
 from ...nn import (
@@ -314,7 +314,8 @@ class BertLayer(Module):
 
 class BertEncoder(Module, AbstractSequentialModule[BertLayer]):
     layers: tuple[BertLayer, ...] | None | BertLayer
-    use_scan: bool = eqx.field(static = True, default = True)
+    use_scan: bool = eqx.field(static = True)
+    layer_size: int = eqx.field(static = True)
 
     def __init__(self, config: BertConfig, *, key: PRNGKeyArray):
         use_scan = getattr(config, "use_scan", True)
@@ -327,12 +328,13 @@ class BertEncoder(Module, AbstractSequentialModule[BertLayer]):
         if use_scan:
             self.layers = vmap_layers(keys) 
         else:
-            self.layers = (
+            self.layers = tuple(
                 BertLayer(config, key = keys[i]) for i in range (config.num_hidden_layers)
             )
 
 
         self.use_scan = use_scan
+        self.layer_size = config.num_hidden_layers
 
     def __call__(
         self,
@@ -342,7 +344,7 @@ class BertEncoder(Module, AbstractSequentialModule[BertLayer]):
         key: PRNGKeyArray | None = None,
     ) -> Float[Array, "B T H"]:
         hidden_states, attention_mask = self.maybe_prepare_input(hidden_states, attention_mask)
-        layer_keys = maybe_split_key(key, len(self.layers))
+        layer_keys = maybe_split_key(key, self.layer_size)
 
         if not self.use_scan:
             hidden_states = self.call_with_loop(hidden_states, attention_mask, key = layer_keys)
@@ -353,10 +355,10 @@ class BertEncoder(Module, AbstractSequentialModule[BertLayer]):
 
 
     def call_with_loop(self, init, *args, **kwargs):
-        carry = init
-        def do_loop(init, *args, **kwargs):
+        def do_loop(carry, *args, **kwargs):
             for i, layer in enumerate(self.layers):
-                block_args, block_kwargs = jtu.tree_map(ft.partial(slice_out, i), (args, kwargs)) 
+                #TODO: maybe add slice_out_with_filter_spec
+                block_args, block_kwargs = jtu.tree_map(ft.partial(slice_out, i = i, size = self.layer_size), (args, kwargs)) 
                 carry = layer(carry, *block_args, **block_kwargs)
                 # should think about checkpointing this carry later :d
             return carry
@@ -365,19 +367,24 @@ class BertEncoder(Module, AbstractSequentialModule[BertLayer]):
 
 
 
-    def call_with_scan(self, init, *args, **kwargs ):
-        pass
+    def call_with_scan(self, init, *args, **kwargs):
+        dynamic_module, static_module = eqx.partition(self.layers, eqx.is_array)
+        scanable_args_kwargs, unscanable_args_kwargs = eqx.partition(
+            (args, kwargs),
+            ft.partial(is_array_like_with_leading_size, size = self.layer_size)
+        )
 
-        # still wip
-        # dynamic, static = eqx.partition(self.layers)
-        #
-        # def do_scan(init, xs):
-        #     dynamic, args, kwargs = xs
-        #     layer = combine(dynamic, static)
-        #     carry = layer(**args, **kwargs)
-        #     return carry, None
-        #
-        # hideen_states, _ = jax.lax.scan(do_scan, init, xs = (dynamic, args, kwargs))
+        def do_scan(carry, xs):
+            dynamic_module, scanable_args_kwargs = xs
+            layer = eqx.combine(dynamic_module, static_module)
+            print(f"DEBUGPRINT[83]: modeling_bert.py:380: layer={layer}")
+            args, kwargs = eqx.combine(scanable_args_kwargs, unscanable_args_kwargs)
+            carry = layer(carry, *args, **kwargs)
+            return carry, None
+
+        carry, _ = jax.lax.scan(do_scan, init, xs = (dynamic_module, scanable_args_kwargs))
+
+        return carry
 
 
 

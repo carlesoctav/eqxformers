@@ -77,7 +77,7 @@ def eager_dot_product_attention(
     *,
     inference: bool = False,
     dropout_rate: float = 0.0,
-    dropout_rng: PRNGKeyArray | None = None,
+    dropout_key: PRNGKeyArray | None = None,
     broadcast_dropout: bool = True,
     **kwargs,
 ) -> Float[Array, "B T N H"]:
@@ -116,7 +116,7 @@ def eager_dot_product_attention(
     weights = jax.nn.softmax(scores.astype(dtype), axis=-1).astype(scores.dtype)
 
     if not inference: 
-        weights = dropout(weights, dropout_rate, inference, key = dropout_key)
+        weights = dropout(weights, dropout_rate, key = dropout_key)
 
     attn = jnp.einsum("btns, bsnh -> btnh", weights, value)
     return attn

@@ -4,7 +4,7 @@ from jaxtyping import PRNGKeyArray
 import jax.tree_util as jtu
 
 
-def maybe_split_key(key: PRNGKeyArray | None, num: int) -> tuple[PRNGKeyArray | None, ...]:
+def maybe_split_key(key: PRNGKeyArray | None, num: int = 2) -> tuple[PRNGKeyArray | None, ...]:
     """Splits a random key into multiple random keys while handling None/num==1."""
     if key is None:
         return (None, ) * num
@@ -17,9 +17,9 @@ def maybe_split_key(key: PRNGKeyArray | None, num: int) -> tuple[PRNGKeyArray | 
 def is_array_like(x):
     return hasattr(x, "shape") and hasattr(x, "dtype")
 
-def slice_out(tree, i):
+def slice_out(tree, i ,size):
     def take(leaf):
-        if is_array_like(leaf):
+        if is_array_like(leaf) and leaf.shape[0] == size:
             return leaf[i]
         else:
             return leaf
@@ -27,3 +27,7 @@ def slice_out(tree, i):
     return jtu.tree_map(take, tree)
 
 
+
+
+def is_array_like_with_leading_size(x, size):
+    return hasattr(x, "shape") and hasattr(x, "dtype") and x.shape[0] == size
