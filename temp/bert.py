@@ -19,7 +19,8 @@ output = model(
     **{
         "position_ids":np.arange(token["input_ids"].shape[1]),
         **token
-    }
+    },
+    key = jax.random.key(10)
 )
 print(f"DEBUGPRINT[59]: bert.py:13: output={output}")
 

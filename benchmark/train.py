@@ -268,6 +268,7 @@ def main():
         hidden_dropout_prob=0.1,
         attention_probs_dropout_prob=0.1,
         _attn_implementation="eager",
+        use_scan = False,
     )
 
     tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
@@ -284,7 +285,7 @@ def main():
     with mesh:
         model = BertForMaskedLM(config, key=model_key)
         print(f"DEBUGPRINT[82]: train.py:276: model={model}")
-        model = _cast_floating(model, jnp.bfloat16)
+        # model = _cast_floating(model, jnp.bfloat16)
         model = unbox(model) 
 
         schedule = optax.warmup_cosine_decay_schedule(

@@ -17,6 +17,7 @@ class LayerNorm(Module):
     eps: float = eqx.field(static=True)
     elementwise_affine: bool = eqx.field(static=True)
     initializer: Initializer = eqx.field(static=True)
+    use_fast_variance: bool = eqx.field(static=True)
 
     def __init__(
         self,
@@ -24,6 +25,7 @@ class LayerNorm(Module):
         eps: float = 1e-5,
         elementwise_affine: bool = True,
         use_bias: bool = True,
+        use_fast_variance: bool = True,
         *,
         initializer: Initializer = one_init,  
         key: PRNGKeyArray, 
@@ -49,6 +51,7 @@ class LayerNorm(Module):
         self.eps = eps 
         self.elementwise_affine = elementwise_affine 
         self.initializer = initializer
+        self.use_fast_variance = use_fast_variance
 
 
 
@@ -74,15 +77,27 @@ class LayerNorm(Module):
             )
 
         axes = tuple(range(nd - k, nd))
-        mean = jnp.mean(x, axis=axes, keepdims=True)
-        var = jnp.var(x, axis=axes, keepdims=True)
-        inv = jax.lax.rsqrt(jnp.maximum(var, 0.0) + self.eps)
-        y = (x - mean) * inv
+        orig_dtype = x.dtype
+        acc_dtype = jnp.promote_types(orig_dtype, jnp.float32)
+        x_acc = jnp.asarray(x, acc_dtype)
+        mean = jnp.mean(x_acc, axis=axes, keepdims=True)
+        diff = x_acc - mean
+        if self.use_fast_variance:
+            mean_sq = jnp.mean(jnp.square(x_acc), axis=axes, keepdims=True)
+            var = jnp.maximum(0.0, mean_sq - jnp.square(mean))
+        else:
+            var = jnp.mean(jnp.square(diff), axis=axes, keepdims=True)
+        inv = jax.lax.rsqrt(var + self.eps)
+        y = diff * inv
 
         if self.weight is not None:
-            y = self.weight * y
+            weight = jnp.asarray(self.weight, acc_dtype)
+            y = weight * y
 
         if self.bias is not None:
-            y = y + self.bias
+            bias = jnp.asarray(self.bias, acc_dtype)
+            y = y + bias
+
+        y = jnp.asarray(y, orig_dtype)
 
         return self.maybe_prepare_output(y)

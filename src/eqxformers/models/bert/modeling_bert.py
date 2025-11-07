@@ -345,6 +345,7 @@ class BertEncoder(Module, AbstractSequentialModule[BertLayer]):
     ) -> Float[Array, "B T H"]:
         hidden_states, attention_mask = self.maybe_prepare_input(hidden_states, attention_mask)
         layer_keys = maybe_split_key(key, self.layer_size)
+        print(f"DEBUGPRINT[84]: modeling_bert.py:347: layer_keys={layer_keys}")
 
         if not self.use_scan:
             hidden_states = self.call_with_loop(hidden_states, attention_mask, key = layer_keys)
