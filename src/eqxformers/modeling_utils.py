@@ -12,9 +12,6 @@ class PrepareFn(tp.Protocol):
     def __call__(self, *args: tp.Any) -> tuple:
         ...
 
-
-
-
 #module with "hooks"
 class Module(eqx.Module):
     prepare_input: PrepareFn = eqx.field(static=True, default=no_hook)
@@ -170,6 +167,4 @@ def apply_transforms(
         module = eqx.tree_at(_collect, module, replacements)
 
     return module
-
-
 

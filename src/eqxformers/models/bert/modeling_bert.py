@@ -1,12 +1,14 @@
+from __future__ import annotations
+
 import functools as ft
 import typing as tp
+from typing import TYPE_CHECKING
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
-from transformers.models.bert.configuration_bert import BertConfig
 
 from ...jax_utils import maybe_split_key, slice_out, is_array_like_with_leading_size
 from ...masking_utils import make_bidirectional_mask
@@ -19,6 +21,9 @@ from ...nn import (
     LayerNorm,
     Linear,
 )
+
+if TYPE_CHECKING:
+    from .configuration_bert import BertConfig
 
 
 class BertEmbeddings(Module):
@@ -345,7 +350,6 @@ class BertEncoder(Module, AbstractSequentialModule[BertLayer]):
     ) -> Float[Array, "B T H"]:
         hidden_states, attention_mask = self.maybe_prepare_input(hidden_states, attention_mask)
         layer_keys = maybe_split_key(key, self.layer_size)
-        print(f"DEBUGPRINT[84]: modeling_bert.py:347: layer_keys={layer_keys}")
 
         if not self.use_scan:
             hidden_states = self.call_with_loop(hidden_states, attention_mask, key = layer_keys)
@@ -367,7 +371,6 @@ class BertEncoder(Module, AbstractSequentialModule[BertLayer]):
         return do_loop(init, *args, **kwargs)
 
 
-
     def call_with_scan(self, init, *args, **kwargs):
         dynamic_module, static_module = eqx.partition(self.layers, eqx.is_array)
         scanable_args_kwargs, unscanable_args_kwargs = eqx.partition(
@@ -378,13 +381,11 @@ class BertEncoder(Module, AbstractSequentialModule[BertLayer]):
         def do_scan(carry, xs):
             dynamic_module, scanable_args_kwargs = xs
             layer = eqx.combine(dynamic_module, static_module)
-            print(f"DEBUGPRINT[83]: modeling_bert.py:380: layer={layer}")
             args, kwargs = eqx.combine(scanable_args_kwargs, unscanable_args_kwargs)
             carry = layer(carry, *args, **kwargs)
             return carry, None
 
         carry, _ = jax.lax.scan(do_scan, init, xs = (dynamic_module, scanable_args_kwargs))
-
         return carry
 
 

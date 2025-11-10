@@ -78,10 +78,6 @@ class ApplyFirstFitPacking(BaseDatasetTransform):
     def __call__(
         self, dataset: grain.IterDataset | grain.MapDataset
     ) -> grain.IterDataset:
-        if not isinstance(
-            dataset, grain.IterDataset
-        ):  # pragma: no cover - sanity guard
-            dataset = dataset.to_iter_dataset()
         bins = self.num_packing_bins or max(self.length_struct.values())
         packed = grain.experimental.FirstFitPackIterDataset(
             dataset,
@@ -91,7 +87,6 @@ class ApplyFirstFitPacking(BaseDatasetTransform):
         )
         return packed
 
-
 @dc.dataclass
 class BatchDataset(BaseDatasetTransform):
     """Batch dataset with a fixed batch size."""
@@ -100,80 +95,8 @@ class BatchDataset(BaseDatasetTransform):
     drop_remainder: bool = True
 
     def __call__(
-        self, dataset: grain.MapDataset | grain.IterDataset
+        self, dataset: grain.IterDataset
     ) -> grain.IterDataset:
-        if isinstance(dataset, grain.MapDataset):
-            dataset = dataset.to_iter_dataset()
         return dataset.batch(
             batch_size=self.batch_size, drop_remainder=self.drop_remainder
         )
-
-
-@dc.dataclass
-class BatchRampUpDataset(BaseDatasetTransform):
-    """Adapt the batch size dynamically following schedule factors."""
-
-    batch_size: int
-    rampup_factors: dict[str, float]
-    drop_remainder: bool = True
-
-    def __call__(
-        self, dataset: grain.MapDataset | grain.IterDataset
-    ) -> grain.IterDataset:
-        if isinstance(dataset, grain.MapDataset):
-            dataset = dataset.to_iter_dataset()
-        schedule = _build_batch_schedule(self.batch_size, self.rampup_factors)
-        return _BatchRampUpIterDataset(
-            dataset, schedule, drop_remainder=self.drop_remainder
-        )
-
-
-def _build_batch_schedule(
-    batch_size: int, factors: dict[str, float]
-) -> Callable[[int], int]:
-    parsed = sorted((int(step), scale) for step, scale in factors.items())
-
-    def schedule(step: int) -> int:
-        scaled = batch_size
-        for boundary, scale in parsed:
-            if step >= boundary:
-                scaled = max(1, int(round(batch_size * scale)))
-            else:
-                break
-        return scaled
-
-    return schedule
-
-
-class _BatchRampUpIterDataset(grain.IterDataset):
-    """IterDataset that adapts the batch size using a user-defined schedule."""
-
-    def __init__(
-        self,
-        parent: grain.IterDataset,
-        schedule: Callable[[int], int],
-        *,
-        drop_remainder: bool,
-    ) -> None:
-        super().__init__(parent)
-        self._schedule = schedule
-        self._drop_remainder = drop_remainder
-
-    def __iter__(self):  # pragma: no cover - thin wrapper around parent iterator
-        parent_iter = iter(self._parent)
-        step = 0
-        while True:
-            batch_size = self._schedule(step)
-            if batch_size <= 0:
-                raise ValueError("Batch size schedule produced a non-positive value")
-            elems = []
-            try:
-                for _ in range(batch_size):
-                    elems.append(next(parent_iter))
-            except StopIteration:
-                if not elems or self._drop_remainder:
-                    raise
-            if not elems:
-                break
-            step += 1
-            yield jtu.tree_map(lambda *xs: np.stack(xs), *elems)

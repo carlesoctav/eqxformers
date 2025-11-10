@@ -17,6 +17,17 @@ from .dataset_transforms import (
 
 
 @dataclass
+class MLMProcessingConfig:
+    tokenizer_name: str = "bert-base-uncased"
+    column_name: str = "id_title"
+    max_length: int = 512
+    mlm_probability: float = 0.15
+    mask_replace_prob: float = 0.8
+    random_replace_prob: float = 0.1
+    pad_to_multiple_of: int | None = None
+    packing: bool = False
+    packing_bins: int | None = None
+@dataclass
 class DataTransformsForMaskedLMGivenText(grain.transforms.RandomMap):
     tokenizer: PreTrainedTokenizerBase
     columns: str
@@ -223,3 +234,12 @@ def masked_language_modeling_transforms(
         operations.append(ReformatPackedForMLM())
 
     return operations, MLMBatch
+
+
+__all__ = [
+    "DataTransformsForMaskedLMGivenText",
+    "MLMBatch",
+    "MLMProcessingConfig",
+    "ReformatPackedForMLM",
+    "masked_language_modeling_transforms",
+]

@@ -28,6 +28,5 @@ def slice_out(tree, i ,size):
 
 
 
-
 def is_array_like_with_leading_size(x, size):
     return hasattr(x, "shape") and hasattr(x, "dtype") and x.shape[0] == size

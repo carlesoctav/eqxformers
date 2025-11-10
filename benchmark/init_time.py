@@ -1,6 +1,5 @@
-from transformers import BertConfig
 import time
-from src.eqxformers.models.bert import BertForMaskedLM 
+from src.eqxformers.models.bert import BertConfig, BertForMaskedLM 
 import equinox as eqx
 import jax 
 
