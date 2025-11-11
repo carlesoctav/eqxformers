@@ -55,7 +55,7 @@ class SufficientMetric:
         return {f"{self.name}/{k}": v for k, v in reduced.items()}
 
     def per_N_metrics(self, step: int, *, skip_check: bool = False) -> dict[str, float]:
-        cached = self.per_N_metrics_buffer.get(step)
+        cached = self.per_N_metrics_buffer.get(step, None)
         if cached is not None:
             return cached
 

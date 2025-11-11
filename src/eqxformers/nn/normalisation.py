@@ -25,7 +25,7 @@ class LayerNorm(Module):
         eps: float = 1e-5,
         elementwise_affine: bool = True,
         use_bias: bool = True,
-        use_fast_variance: bool = True,
+        use_fast_variance: bool = False,
         *,
         initializer: Initializer = one_init,  
         key: PRNGKeyArray, 

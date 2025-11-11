@@ -86,7 +86,6 @@ class OptimizerConfig(
             )
 
             stable_steps = cycle_steps  - warmup_steps - lr_decay_steps
-            print(f"DEBUGPRINT[26]: optimizer_utils.py:88: stable_steps={stable_steps}")
 
             if stable_steps != 0:
                 stable = optax.constant_schedule(learning_rate)
@@ -111,8 +110,6 @@ class OptimizerConfig(
                 
             previous_end = decay(lr_decay_steps)
 
-        print(f"DEBUGPRINT[25]: optimizer_utils.py:114: schedules={schedules}")
-        print(f"DEBUGPRINT[24]: optimizer_utils.py:114: boundaries={boundaries}")
         if len(schedules) > 1:
             return optax.join_schedules(schedules, boundaries) 
         else:

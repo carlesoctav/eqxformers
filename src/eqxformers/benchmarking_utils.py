@@ -1,7 +1,7 @@
 import abc
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -30,6 +30,7 @@ from eqxformers.training_utils import (
     TrainStepFn,
     make_train_step,
 )
+from eqxformers.metrics_utils import SufficientMetric
 
 
 logger = logging.getLogger("distributed_logger")
@@ -135,7 +136,8 @@ class BenchmarkConfig:
         key, model_key = jr.split(key)
 
         mesh = jax.make_mesh(tuple(self.mesh_shape), tuple(self.mesh_axis_names))
-        tracker = self.tracker.make() if self.tracker is not None else None
+        run_config = asdict(self)
+        tracker = self.tracker.make(run_config) if self.tracker is not None else None
 
         loss_function = self.loss_function.make()
         if self.train_step is not None:
@@ -198,18 +200,20 @@ def benchmark_loop(
     state: State,
     train_step_fn: TrainStepFn,
     train_loader: Iterable[Any],
+    tracker: Tracker | None = None,
     *,
     num_steps: int,
     key: Array,
 ) -> tuple[State, dict[str, Any]]:
-    step_idx = -1
+    step_idx = 0
     train_times: list[float] = []
     next_batch_times: list[float] = []
     compile_time: float | None = None
     loss_history: list[tuple[int, float]] = []
 
     iterator = iter(train_loader)
-    progress = tqdm(total=num_steps + 1, desc="Benchmarking", disable=jax.process_index() != 0)
+    progress = tqdm(total=num_steps, desc="Benchmarking", disable=jax.process_index() != 0)
+    metrics = SufficientMetric(name = "train")
     try:
         while step_idx < num_steps:
             batch_start = time.perf_counter()
@@ -220,15 +224,12 @@ def benchmark_loop(
                 break
             batch_end = time.perf_counter()
 
-            key, step_key = jr.split(key)
-
-            step_idx += 1
             step_start = time.monotonic()
             with jax.profiler.StepTraceAnnotation("train_step", step=step_idx):
-                state, aux = train_step_fn(state, batch, key=step_key)
-            loss_value = _extract_loss(aux)
-            if loss_value is not None:
-                loss_history.append((step_idx, loss_value))
+                state, aux = train_step_fn(state, batch, key=key)
+            metrics += aux
+            logs= {**metrics.step_metrics(), **metrics.per_N_metrics(step_idx)}
+            tracker.log(logs, step = step_idx)
             jtu.tree_map(lambda x: x.block_until_ready() if hasattr(x, "block_until_ready") else x, state)
             step_end = time.monotonic()
 
@@ -240,6 +241,7 @@ def benchmark_loop(
                 next_batch_times.append(batch_end - batch_start)
 
             progress.update(1)
+            step_idx += 1
     finally:
         progress.close()
 
@@ -252,7 +254,6 @@ def benchmark_loop(
         "compile_time": float(compile_time) if compile_time is not None else None,
     }
     logger.info("Benchmark stats: %s", stats)
-    _log_loss_history(loss_history)
     return state, stats
 
 
@@ -281,11 +282,12 @@ class BenchmarkLoop:
                     self.state,
                     self.train_step_fn,
                     self.data_loader,
+                    self.tracker,
                     num_steps=self.num_train_step,
                     key=self.key,
                 )
                 if self.tracker is not None:
-                    self.tracker.log("benchmark_stats", stats)
+                    self.tracker.log_hparams(stats)
                 return stats
             finally:
                 if self.tracker is not None and not self._tracker_finished:

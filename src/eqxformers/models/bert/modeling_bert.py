@@ -408,15 +408,11 @@ class BertEncoder(Module, AbstractSequentialModule[BertLayer]):
             (args, kwargs),
             ft.partial(is_array_like_with_leading_size, size = self.layer_size)
         )
-        print(f"DEBUGPRINT[34]: modeling_bert.py:407: scanable_args_kwargs={scanable_args_kwargs}")
-        print(f"DEBUGPRINT[35]: modeling_bert.py:407: unscanable_args_kwargs={unscanable_args_kwargs}")
 
         def do_scan(carry, xs):
             dynamic_module, scanable_args_kwargs = xs
             layer = eqx.combine(dynamic_module, static_module)
             args, kwargs = eqx.combine(scanable_args_kwargs, unscanable_args_kwargs)
-            print(f"DEBUGPRINT[31]: modeling_bert.py:415: kwargs={kwargs}")
-            print(f"DEBUGPRINT[30]: modeling_bert.py:415: args={args}")
             carry = layer(carry, *args, **kwargs)
             return carry, None
 

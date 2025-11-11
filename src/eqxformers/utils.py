@@ -1,8 +1,11 @@
 import typing as tp
+import jax
+import functools
 
 
 K = tp.TypeVar("K")
 V = tp.TypeVar("V")
+A = tp.TypeVar("A")
 
 
 
@@ -42,3 +45,11 @@ class GeneralInterface(tp.MutableMapping[K, V], tp.Generic[K, V]):
     def valid_keys(self) -> list[str]:
         return list(self.keys())
 
+def rank_zero(fn: tp.Callable[..., A]) -> tp.Callable[..., A | None]:
+    @functools.wraps(fn)
+    def _wrapped(*args: tp.Any, **kwargs: tp.Any) -> A | None:
+        if not jax.process_index() == 0:
+            return None
+        return fn(*args, **kwargs)
+
+    return _wrapped
