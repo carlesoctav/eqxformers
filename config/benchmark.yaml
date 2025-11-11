@@ -33,7 +33,7 @@ model:
   type_vocab_size: 2
   hidden_dropout_prob: 0.1
   attention_probs_dropout_prob: 0.1
-  use_scan: true
+  use_scan: True
 
 optimizer:
   type: adam
@@ -47,9 +47,11 @@ optimizer:
 loss_function:
   type: mlm
 
-tracker:
-  type: wandb
-  project: benchmark
-  entity: your-entity
-  name: local_debug
-  tags: ["benchmark", "bert"]
+tracker : null
+
+# tracker:
+#   type: wandb
+#   project: benchmark
+#   entity: your-entity
+#   name: local_debug
+#   tags: ["benchmark", "bert"]

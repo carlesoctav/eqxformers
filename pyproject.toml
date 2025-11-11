@@ -32,3 +32,8 @@ order-by-type = false
 [tool.uv.sources]
 torchax = { git = "https://github.com/google/torchax" }
 
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

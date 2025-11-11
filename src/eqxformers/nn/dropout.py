@@ -53,7 +53,10 @@ class Dropout(Module):
             raise ValueError("Dropout layer requires a PRNGKey during non-inference mode.") 
 
         if self.inference:
-            return x
+            return self.maybe_prepare_output(x)
+
+        if self.p == 0:
+            return self.maybe_prepare_output(x)
 
         x = self.maybe_prepare_input(x)
 

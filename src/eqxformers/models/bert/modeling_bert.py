@@ -1,8 +1,6 @@
-from __future__ import annotations
-
 import functools as ft
 import typing as tp
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
@@ -10,7 +8,8 @@ import jax.numpy as jnp
 import jax.tree_util as jtu
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
-from ...jax_utils import maybe_split_key, slice_out, is_array_like_with_leading_size
+from ...config import ModelConfig
+from ...jax_utils import is_array_like_with_leading_size, maybe_split_key, slice_out
 from ...masking_utils import make_bidirectional_mask
 from ...modeling_utils import Module
 from ...nn import (
@@ -22,8 +21,40 @@ from ...nn import (
     Linear,
 )
 
-if TYPE_CHECKING:
-    from .configuration_bert import BertConfig
+
+@ModelConfig.register_subclass("bert")
+@dataclass
+class BertConfig(ModelConfig):
+    vocab_size: int = 30522
+    hidden_size: int = 768
+    num_hidden_layers: int = 12
+    num_attention_heads: int = 12
+    intermediate_size: int = 3072
+    layer_norm_eps: float = 1e-12
+    hidden_dropout_prob: float = 0.0
+    attention_probs_dropout_prob: float = 0.0
+    max_position_embeddings: int = 512
+    type_vocab_size: int = 2
+    pad_token_id: int | None = 0
+    initializer_range: float = 0.02
+    tie_word_embeddings: bool = True
+    use_scan: bool = True
+    _attn_implementation: str = "eager"
+    task: str = "model"
+
+    def __post_init__(self) -> None:
+        if self.hidden_size % self.num_attention_heads != 0:
+            raise ValueError("hidden_size must be divisible by num_attention_heads")
+
+    def make(self, task: str | None = None, *, key: PRNGKeyArray, **kwargs: tp.Any) -> tp.Any:
+        task = task if task else self.task
+        match task:
+            case "model":
+                return BertModel(self, key=key, **kwargs)
+            case "mlm":
+                return BertForMaskedLM(self, key=key, **kwargs)
+            case _:
+                raise NotImplementedError(f"Unknown task '{task}' for BertConfig")
 
 
 class BertEmbeddings(Module):
@@ -377,11 +408,15 @@ class BertEncoder(Module, AbstractSequentialModule[BertLayer]):
             (args, kwargs),
             ft.partial(is_array_like_with_leading_size, size = self.layer_size)
         )
+        print(f"DEBUGPRINT[34]: modeling_bert.py:407: scanable_args_kwargs={scanable_args_kwargs}")
+        print(f"DEBUGPRINT[35]: modeling_bert.py:407: unscanable_args_kwargs={unscanable_args_kwargs}")
 
         def do_scan(carry, xs):
             dynamic_module, scanable_args_kwargs = xs
             layer = eqx.combine(dynamic_module, static_module)
             args, kwargs = eqx.combine(scanable_args_kwargs, unscanable_args_kwargs)
+            print(f"DEBUGPRINT[31]: modeling_bert.py:415: kwargs={kwargs}")
+            print(f"DEBUGPRINT[30]: modeling_bert.py:415: args={args}")
             carry = layer(carry, *args, **kwargs)
             return carry, None
 

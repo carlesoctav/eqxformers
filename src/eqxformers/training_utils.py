@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import abc
 from typing import Any, Protocol
 
@@ -24,7 +22,7 @@ class LossFunctionConfig(
     abc.ABC,
 ):
     @abc.abstractmethod
-    def make(self, data_config: Any) -> LossFn:
+    def make(self) -> LossFn:
         raise NotImplementedError
 
 
@@ -71,7 +69,6 @@ def make_train_step(loss_function: LossFn, *, gradient_accumulation_steps: int) 
 
     def train_step(state: State, batch: Any, *, key: Array) -> tuple[State, dict[str, Any]]:
         (loss, aux), grads = grad_fn(state.model, batch, key=key)
-        del loss
         new_state = state.apply_gradients(grads)
         return new_state, aux
 

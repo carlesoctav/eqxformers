@@ -1,4 +1,3 @@
-import dataclasses as dc
 from dataclasses import dataclass
 
 import grain
@@ -27,6 +26,7 @@ class MLMProcessingConfig:
     pad_to_multiple_of: int | None = None
     packing: bool = False
     packing_bins: int | None = None
+
 @dataclass
 class DataTransformsForMaskedLMGivenText(grain.transforms.RandomMap):
     tokenizer: PreTrainedTokenizerBase
@@ -91,10 +91,13 @@ class DataTransformsForMaskedLMGivenText(grain.transforms.RandomMap):
         else:
             token_type_ids = np.asarray(token_type_ids, dtype=np.int32)
 
+        position_ids = np.arange(input_ids.shape[0], dtype=np.int32)
+
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "token_type_ids": token_type_ids,
+            "position_ids": position_ids,
             "labels": np.asarray(labels, dtype=np.int32),
         }
 
@@ -148,7 +151,7 @@ class DataTransformsForMaskedLMGivenText(grain.transforms.RandomMap):
 
 
 @jtu.register_dataclass
-@dc.dataclass
+@dataclass
 class MLMBatch:
     """Batch container for masked language modeling."""
 
@@ -160,7 +163,7 @@ class MLMBatch:
     position_ids: Array | None = None
 
 
-@dc.dataclass
+@dataclass
 class ReformatPackedForMLM(grain_transforms.Map):
     """Rename packed dataset keys to the expected MLM naming."""
 
@@ -224,6 +227,7 @@ def masked_language_modeling_transforms(
             "labels": max_length,
             "attention_mask": max_length,
             "token_type_ids": max_length,
+            "position_ids": max_length,
         }
         operations.append(
             ApplyFirstFitPacking(

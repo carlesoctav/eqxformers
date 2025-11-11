@@ -1,11 +1,9 @@
-from __future__ import annotations
-
-import functools
+import jax
 from dataclasses import dataclass
 from typing import Any
 
 import equinox as eqx
-import jax
+import functools
 import jax.numpy as jnp
 import jax.random as jr
 from jax import Array
@@ -37,20 +35,19 @@ def masked_language_modeling_loss(
     model: eqx.Module,
     batch: Any,
     *,
-    ignore_index: int = - 100,
-    key: Array
+    key: Array,
+    ignore_index: int = -100,
 ):
     _, dropout_key = jr.split(key)
 
     logits = model(
         input_ids=batch.input_ids,
-        position_ids= batch.position_ids,
+        position_ids=batch.position_ids,
         token_type_ids=batch.token_type_ids,
         attention_mask=batch.attention_mask,
         segment_ids=getattr(batch, "segment_ids", None),
         key=dropout_key,
-    )
-    logits = logits.astype(jnp.float32)
+    ).astype(jnp.float32)
 
     labels = batch.labels
     valid_mask = labels != ignore_index
@@ -73,16 +70,14 @@ def masked_language_modeling_loss(
     return total_loss, aux
 
 
-
 @LossFunctionConfig.register_subclass("mlm")
 @dataclass
 class MaskedLanguageModelingLossConfig(LossFunctionConfig):
     ignore_index: int = -100
+
     def make(self) -> LossFn:
-        return functools.partial(
-            masked_language_modeling_loss,
-            ignore_index = self.ignore_index
-        )
+        return functools.partial(masked_language_modeling_loss, ignore_index=self.ignore_index)
+
 
 __all__ = [
     "masked_language_modeling_loss",

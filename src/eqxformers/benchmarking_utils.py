@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import abc
 import logging
 import time
@@ -13,6 +11,7 @@ import jax.random as jr
 import jax.tree_util as jtu
 import numpy as np
 from jax import Array
+import equinox as eqx
 from jax.sharding import Mesh, set_mesh
 from tqdm.auto import tqdm
 
@@ -22,6 +21,7 @@ from eqxformers.loss import MaskedLanguageModelingLossConfig
 from eqxformers.models.bert import BertConfig
 from eqxformers.optim.adam import AdamConfig
 from eqxformers.optimizer_utils import OptimizerConfig
+from eqxformers.logging_utils import setup_logger
 from eqxformers.tracker_utils import Tracker, TrackerConfig, TrackioTrackerConfig
 from eqxformers.training_utils import (
     LossFn,
@@ -32,7 +32,67 @@ from eqxformers.training_utils import (
 )
 
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger("distributed_logger")
+
+
+def _device_scalar_to_float(value: Any) -> float:
+    value = jax.device_get(value)
+    if isinstance(value, np.ndarray):
+        return float(value.reshape(()))
+    return float(value)
+
+
+def _extract_loss(aux: Any) -> float | None:
+    if not isinstance(aux, dict):
+        return None
+    loss_entry = aux.get("loss")
+    if loss_entry is None:
+        return None
+
+    try:
+        if isinstance(loss_entry, (tuple, list)) and len(loss_entry) == 2:
+            total, denom = loss_entry
+            total_f = _device_scalar_to_float(total)
+            denom_f = _device_scalar_to_float(denom)
+            if denom_f != 0:
+                return total_f / denom_f
+            return total_f
+        return _device_scalar_to_float(loss_entry)
+    except Exception:  # pragma: no cover - defensive logging
+        logger.debug("Failed to extract loss from %s", loss_entry, exc_info=True)
+        return None
+
+
+def _format_loss_history(history: list[tuple[int, float]], max_points: int = 20) -> str:
+    if not history:
+        return ""
+    if len(history) <= max_points:
+        return ", ".join(f"{step}:{loss:.4f}" for step, loss in history)
+    head_count = max_points // 2
+    tail_count = max_points - head_count
+    head = ", ".join(f"{step}:{loss:.4f}" for step, loss in history[:head_count])
+    tail = ", ".join(f"{step}:{loss:.4f}" for step, loss in history[-tail_count:])
+    return f"{head}, ..., {tail}"
+
+
+def _log_loss_history(history: list[tuple[int, float]]) -> None:
+    if not history:
+        return
+    losses = [loss for _, loss in history]
+    mean_loss = float(np.mean(losses))
+    min_loss = float(np.min(losses))
+    max_loss = float(np.max(losses))
+    last_step, last_loss = history[-1]
+    logger.info(
+        "Loss stats (per-token average over %d steps): min=%.6f | max=%.6f | mean=%.6f | last(step=%d)=%.6f",
+        len(history),
+        min_loss,
+        max_loss,
+        mean_loss,
+        last_step,
+        last_loss,
+    )
+    logger.info("Loss trajectory sample: %s", _format_loss_history(history))
 
 
 class TrainStepConfig(
@@ -67,6 +127,71 @@ class BenchmarkConfig:
     loss_function: LossFunctionConfig = field(default_factory=MaskedLanguageModelingLossConfig)
     train_step: TrainStepConfig | None = None
     hlo_path: Path | None = field(default_factory=lambda: Path("benchmark/train_hlo.txt"))
+    log_file: Path = field(default_factory=lambda: Path("distributed.log"))
+
+    def make(self) -> "BenchmarkLoop":
+        logger.info("Initializing benchmark loop")
+        key = jr.PRNGKey(self.seed)
+        key, model_key = jr.split(key)
+
+        mesh = jax.make_mesh(tuple(self.mesh_shape), tuple(self.mesh_axis_names))
+        tracker = self.tracker.make() if self.tracker is not None else None
+
+        loss_function = self.loss_function.make()
+        if self.train_step is not None:
+            raise NotImplementedError("Custom train steps are not supported yet; configure loss_function instead.")
+
+        train_step_fn = make_train_step(
+            loss_function=loss_function,
+            gradient_accumulation_steps=self.gradient_accumulation_steps,
+        )
+
+        train_loader = self.data.make(mesh=mesh, seed=self.seed)
+
+        def unbox_params(tree):
+            def f(leaf):
+                if eqx.is_array(leaf):
+                    return jax.lax.with_sharding_constraint(leaf, jax.P())
+                return leaf
+            return jtu.tree_map(f, tree)
+
+        with set_mesh(mesh):
+            model = self.model.make(key=model_key)
+            model = unbox_params(model)
+            grad_tx = self.optimizer.make(self.num_train_steps)
+            state = State(model, grad_tx)
+
+            start_time = time.monotonic()
+            jtu.tree_map(lambda x: x.block_until_ready() if hasattr(x, "block_until_ready") else x, state)
+            diff = time.monotonic() - start_time
+            logger.info("Model and optimizer initialization took %.4fs", diff)
+
+            iterator = iter(train_loader)
+            first_batch = next(iterator)
+            key, lower_key = jr.split(key)
+            start = time.monotonic()
+            lowered = train_step_fn.lower(state, first_batch, key=lower_key)
+            compiled = lowered.compile()
+            compile_time = time.monotonic() - start
+            logger.info("Train step compilation took %.4fs", compile_time)
+
+        if self.hlo_path is not None:
+            hlo_path = Path(self.hlo_path)
+            hlo_path.parent.mkdir(parents=True, exist_ok=True)
+            hlo_path.write_text(lowered.as_text())
+            logger.info("Compilation artifact written to %s", hlo_path)
+
+        return BenchmarkLoop(
+            config=self,
+            state=state,
+            train_step_fn=compiled,
+            data_loader=train_loader,
+            num_train_step=self.num_train_steps,
+            tracker=tracker,
+            key=key,
+            mesh=mesh,
+            log_file=self.log_file,
+        )
 
 
 def benchmark_loop(
@@ -81,6 +206,7 @@ def benchmark_loop(
     train_times: list[float] = []
     next_batch_times: list[float] = []
     compile_time: float | None = None
+    loss_history: list[tuple[int, float]] = []
 
     iterator = iter(train_loader)
     progress = tqdm(total=num_steps + 1, desc="Benchmarking", disable=jax.process_index() != 0)
@@ -90,7 +216,7 @@ def benchmark_loop(
             try:
                 batch = next(iterator)
             except StopIteration:
-                LOGGER.info("Data loader exhausted during benchmark loop")
+                logger.info("Data loader exhausted during benchmark loop")
                 break
             batch_end = time.perf_counter()
 
@@ -100,13 +226,15 @@ def benchmark_loop(
             step_start = time.monotonic()
             with jax.profiler.StepTraceAnnotation("train_step", step=step_idx):
                 state, aux = train_step_fn(state, batch, key=step_key)
-            _ = aux
+            loss_value = _extract_loss(aux)
+            if loss_value is not None:
+                loss_history.append((step_idx, loss_value))
             jtu.tree_map(lambda x: x.block_until_ready() if hasattr(x, "block_until_ready") else x, state)
             step_end = time.monotonic()
 
             if step_idx == 0:
                 compile_time = step_end - step_start
-                LOGGER.info("Compilation (step 0) took %.4fs", compile_time)
+                logger.info("Compilation (step 0) took %.4fs", compile_time)
             else:
                 train_times.append(step_end - step_start)
                 next_batch_times.append(batch_end - batch_start)
@@ -123,12 +251,13 @@ def benchmark_loop(
         "next_batch_time_mean": float(batch_times_arr.mean()),
         "compile_time": float(compile_time) if compile_time is not None else None,
     }
-    LOGGER.info("Benchmark stats: %s", stats)
+    logger.info("Benchmark stats: %s", stats)
+    _log_loss_history(loss_history)
     return state, stats
 
 
-def setup_logging():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+def setup_logging(log_file: Path | str = "distributed.log") -> logging.LoggerAdapter:
+    return setup_logger(log_file)
 
 
 @dataclass
@@ -142,65 +271,10 @@ class BenchmarkLoop:
     key: Array = field(default_factory=lambda: jr.PRNGKey(0), repr=False)
     mesh: Mesh = field(repr=False, default=None)
     _tracker_finished: bool = field(default=False, init=False, repr=False)
-
-    @classmethod
-    def make(cls, cfg: BenchmarkConfig) -> BenchmarkLoop:
-        LOGGER.info("Initializing benchmark loop")
-        key = jr.PRNGKey(cfg.seed)
-        key, model_key = jr.split(key)
-
-        mesh = jax.make_mesh(tuple(cfg.mesh_shape), tuple(cfg.mesh_axis_names))
-        tracker = cfg.tracker.make() if cfg.tracker is not None else None
-
-        loss_function = cfg.loss_function.make(cfg.data)
-        if cfg.train_step is not None:
-            raise NotImplementedError("Custom train steps are not supported yet; configure loss_function instead.")
-
-        train_step_fn = make_train_step(
-            loss_function=loss_function,
-            gradient_accumulation_steps=cfg.gradient_accumulation_steps,
-        )
-
-        train_loader = cfg.data.make(mesh=mesh, seed=cfg.seed)
-
-        with set_mesh(mesh):
-            model = cfg.model.make(key=model_key)
-            grad_tx = cfg.optimizer.make(cfg.num_train_steps)
-            state = State(model, grad_tx)
-
-            start_time = time.monotonic()
-            jtu.tree_map(lambda x: x.block_until_ready() if hasattr(x, "block_until_ready") else x, state)
-            diff = time.monotonic() - start_time
-            LOGGER.info("Model and optimizer initialization took %.4fs", diff)
-
-            iterator = iter(train_loader)
-            first_batch = next(iterator)
-            key, lower_key = jr.split(key)
-            start = time.monotonic()
-            lowered = train_step_fn.lower(state, first_batch, key=lower_key)
-            compiled = lowered.compile()
-            compile_time = time.monotonic() - start
-            LOGGER.info("Train step compilation took %.4fs", compile_time)
-
-        if cfg.hlo_path is not None:
-            hlo_path = Path(cfg.hlo_path)
-            hlo_path.parent.mkdir(parents=True, exist_ok=True)
-            hlo_path.write_text(lowered.as_text())
-            LOGGER.info("Compilation artifact written to %s", hlo_path)
-
-        return cls(
-            config=cfg,
-            state=state,
-            train_step_fn=compiled,
-            data_loader=train_loader,
-            num_train_step=cfg.num_train_steps,
-            tracker=tracker,
-            key=key,
-            mesh=mesh,
-        )
+    log_file: Path = field(default_factory=lambda: Path("distributed.log"))
 
     def run(self) -> dict[str, Any]:
-        LOGGER.info("Starting benchmark for %d steps", self.num_train_step)
+        logger.info("Starting benchmark for %d steps", self.num_train_step)
         with set_mesh(self.mesh):
             try:
                 self.state, stats = benchmark_loop(
@@ -217,6 +291,7 @@ class BenchmarkLoop:
                 if self.tracker is not None and not self._tracker_finished:
                     self.tracker.finish()
                     self._tracker_finished = True
+
 
 
 __all__ = [
