@@ -12,6 +12,7 @@ from jax.sharding import Mesh, PartitionSpec
 from .dataset_transforms import (
     BaseDatasetTransform,
     EnsureMapDataset,
+    HuggingFaceIterableDataset,
 )
 from .transforms import CollateToBatch
 
@@ -120,7 +121,7 @@ def make_dataloader(
     worker_buffer_size: int = 0,
     drop_remainder: bool = True,
     batch_class: type[Batch] | None = None,
-) -> IterDatasetWithInputSpec:
+    ) -> IterDatasetWithInputSpec:
     if dataloading_host_index is None:
         dataloading_host_index = jax.process_index()
     if dataloading_host_count is None:
@@ -142,6 +143,7 @@ def make_dataloader(
     read_options = grain.ReadOptions(
         num_threads=read_num_threads, prefetch_buffer_size=read_prefetch_buffer_size
     )
+    shuffle_buffer_size = max(read_prefetch_buffer_size, worker_buffer_size)
     for dataset in datasets:
         if not operations:
             raise ValueError("No operations provided for dataset preparation")
@@ -156,14 +158,47 @@ def make_dataloader(
 
         if shuffle:
             ds = ds.seed(seed + dataloading_host_index)
-            ds = ds.shuffle()
+            if isinstance(ds, grain.MapDataset):
+                ds = ds.shuffle()
+            elif isinstance(ds, HuggingFaceIterableDataset):
+                buffer_size = shuffle_buffer_size if shuffle_buffer_size > 0 else None
+                ds = ds.shuffle(
+                    seed=seed + dataloading_host_index,
+                    buffer_size=buffer_size,
+                )
+            else:
+                raise TypeError(
+                    f"Shuffle requested but unsupported for dataset type {type(ds)}"
+                )
         if num_epochs is not None:
-            ds = ds.repeat(num_epochs)
+            if isinstance(ds, grain.MapDataset):
+                ds = ds.repeat(num_epochs)
+            elif isinstance(ds, HuggingFaceIterableDataset):
+                ds = ds.repeat(num_epochs)
+            else:
+                raise TypeError(
+                    f"Repeat requested but unsupported for dataset type {type(ds)}"
+                )
 
         if dataloading_host_count > 1 and is_not_sharded:
-            ds = ds[dataloading_host_index::dataloading_host_count]
+            if isinstance(ds, grain.MapDataset):
+                ds = ds[dataloading_host_index::dataloading_host_count]
+            elif isinstance(ds, HuggingFaceIterableDataset):
+                ds = ds.shard(
+                    num_shards=dataloading_host_count,
+                    index=dataloading_host_index,
+                )
+            else:
+                raise TypeError(
+                    f"Sharding requested but unsupported for dataset type {type(ds)}"
+                )
 
-        ds = ds.to_iter_dataset(read_options)
+        if isinstance(ds, grain.MapDataset):
+            ds = ds.to_iter_dataset(read_options)
+        elif not isinstance(ds, grain.IterDataset):
+            raise TypeError(
+                "Dataset transform pipeline must return a Grain MapDataset or IterDataset"
+            )
 
         for op in rest_ops:
             # NOTES: pretty much all transformation just wrapping the dataset by another dataset class with new __iter__ and __next__ (the iterator part)
