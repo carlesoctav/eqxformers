@@ -21,24 +21,25 @@ logger = logging.getLogger(__name__)
 class DownloadConfig:
     """Configuration for downloading datasets from the Hugging Face Hub."""
 
-    hf_dataset_id: str
+    path: str = "owner/dataset"
     revision: str | None = None
     hf_urls_glob: list[str] = field(default_factory=list)
 
-    gcs_output_path: str = "./data"
+    output_path: str = "./data"
     hf_repo_type_prefix: str = "datasets"
-    num_workers: int = 8
+    num_proc: int = 8
     chunk_size_bytes: int = 16 * 1024 * 1024
     max_retries: int = 10
     action: Literal["stream", "save_to_disk"] = "stream"
 
-    dataset_config: str | None = None
+    name: str | None = None
     split: str | None = None
     streaming: bool = False
     max_shard_size: str = "500MB"
-    save_to_disk_path: str | None = None
 
     hf_token: str | None = None
+    dump_config: bool = False
+    dump_config_path: str | None = None
 
 
 def ensure_fsspec_path_writable(output_path: str) -> None:
@@ -60,7 +61,7 @@ def stream_file_to_fsspec(cfg: DownloadConfig, file_path: str, fsspec_file_path:
     may not be thread-safe across a ThreadPool.
     """
     hf_fs = HfFileSystem(token=cfg.hf_token or os.environ.get("HF_TOKEN", False))
-    target_fs, _ = fsspec.core.url_to_fs(cfg.gcs_output_path)
+    target_fs, _ = fsspec.core.url_to_fs(cfg.output_path)
 
     for attempt in range(cfg.max_retries):
         try:
@@ -84,7 +85,7 @@ def write_provenance_json(output_path: str, cfg: DownloadConfig, files: list[str
     fs, _ = fsspec.core.url_to_fs(output_path)
     fs.mkdirs(output_path, exist_ok=True)
     provenance_path = os.path.join(output_path, "provenance.json")
-    payload = {"dataset": cfg.hf_dataset_id, "version": cfg.revision, "links": sorted(files)}
+    payload = {"dataset": cfg.path, "version": cfg.revision, "links": sorted(files)}
     with fs.open(provenance_path, "w") as fp:
         json.dump(payload, fp)
     logger.info("Wrote provenance to %s", provenance_path)
@@ -93,7 +94,7 @@ def write_provenance_json(output_path: str, cfg: DownloadConfig, files: list[str
 def list_repo_files(cfg: DownloadConfig, hf_fs: HfFileSystem) -> list[str]:
     """List files in the HF repo, applying any glob filters."""
     hf_repo_prefix = cfg.hf_repo_type_prefix.strip("/")
-    repo_path = f"{hf_repo_prefix}/{cfg.hf_dataset_id}" if hf_repo_prefix else cfg.hf_dataset_id
+    repo_path = f"{hf_repo_prefix}/{cfg.path}" if hf_repo_prefix else cfg.path
 
     if not cfg.hf_urls_glob:
         files = hf_fs.find(repo_path, revision=cfg.revision)
@@ -109,32 +110,32 @@ def list_repo_files(cfg: DownloadConfig, hf_fs: HfFileSystem) -> list[str]:
 def download_hf(cfg: DownloadConfig) -> None:
     """Download raw files from a Hugging Face dataset repo to an fsspec path."""
     logging.basicConfig(level=logging.INFO)
-    ensure_fsspec_path_writable(cfg.gcs_output_path)
+    ensure_fsspec_path_writable(cfg.output_path)
 
     hf_fs = HfFileSystem(token=cfg.hf_token or os.environ.get("HF_TOKEN", False))
     files = list_repo_files(cfg, hf_fs)
     if not files:
-        raise ValueError(f"No files found for dataset `{cfg.hf_dataset_id}`. Used glob patterns: {cfg.hf_urls_glob}")
+        raise ValueError(f"No files found for dataset `{cfg.path}`. Used glob patterns: {cfg.hf_urls_glob}")
 
     tasks = []
     for file in files:
-        fsspec_file_path = os.path.join(cfg.gcs_output_path, file.split("/", 3)[-1])
+        fsspec_file_path = os.path.join(cfg.output_path, file.split("/", 3)[-1])
         tasks.append((cfg, file, fsspec_file_path))
 
     logger.info("Total number of files to process: %s", len(tasks))
 
-    with ThreadPoolExecutor(max_workers=cfg.num_workers) as executor:
+    with ThreadPoolExecutor(max_workers=cfg.num_proc) as executor:
         futures = [executor.submit(stream_file_to_fsspec, *task) for task in tasks]
         for future in as_completed(futures):
             future.result()
 
-    write_provenance_json(cfg.gcs_output_path, cfg, files)
-    logger.info("Streamed all files and wrote provenance JSON; check %s.", cfg.gcs_output_path)
+    write_provenance_json(cfg.output_path, cfg, files)
+    logger.info("Streamed all files and wrote provenance JSON; check %s.", cfg.output_path)
 
 
 def save_to_disk(cfg: DownloadConfig) -> str:
     """Materialize a dataset locally using `datasets.save_to_disk` (Arrow format)."""
-    target_path = cfg.save_to_disk_path or cfg.gcs_output_path
+    target_path = cfg.output_path
 
     if target_path is None:
         raise ValueError("Provide `save_to_disk_path` or `gcs_output_path` for save_to_disk.")
@@ -143,20 +144,30 @@ def save_to_disk(cfg: DownloadConfig) -> str:
 
     Path(target_path).parent.mkdir(parents=True, exist_ok=True)
     dataset = load_dataset(
-        cfg.hf_dataset_id,
-        name=cfg.dataset_config,
+        cfg.path,
+        name=cfg.name,
         split=cfg.split,
         revision=cfg.revision,
-        num_proc = cfg.num_workers,
+        num_proc=cfg.num_proc,
         streaming=False,
     )
-    dataset.save_to_disk(target_path, max_shard_size=cfg.max_shard_size,num_proc = cfg.num_workers)
-    logger.info("Saved dataset `%s` (revision `%s`) to %s", cfg.hf_dataset_id, cfg.revision, target_path)
+    dataset.save_to_disk(target_path, max_shard_size=cfg.max_shard_size, num_proc=cfg.num_proc)
+    logger.info("Saved dataset `%s` (revision `%s`) to %s", cfg.path, cfg.revision, target_path)
     return target_path
 
 
 @draccus.wrap()
 def main(cfg: DownloadConfig) -> None:
+    if cfg.dump_config:
+        template = DownloadConfig()
+        if cfg.dump_config_path:
+            with open(cfg.dump_config_path, "w", encoding="utf-8") as f:
+                draccus.dump(template, f)
+            print(f"Wrote template config to {cfg.dump_config_path}")
+        else:
+            print(draccus.dump(template))
+        return
+
     if cfg.action == "save_to_disk":
         save_to_disk(cfg)
         return
