@@ -4,6 +4,7 @@ import typing as tp
 
 import jax.tree_util as jtu
 import numpy as np
+from datasets import IterableDataset
 
 import grain
 
@@ -20,14 +21,16 @@ class BaseDatasetTransform:
 class _HuggingFaceIterableDatasetIterator(grain.DatasetIterator):
     """Iterator wrapper around a HuggingFace streaming dataset."""
 
-    def __init__(self, dataset: tp.Any):
+    def __init__(self, dataset: IterableDataset):
         super().__init__()
+        self._dataset = dataset
         self._iterator = iter(dataset)
 
     def __next__(self):
         return next(self._iterator)
 
     def get_state(self):
+        return self._dataset.state_dict()
         raise RuntimeError("Checkpointing HuggingFace streaming datasets is not supported.")
 
     def set_state(self, state):  # pragma: no cover - streaming datasets are not checkpointable
@@ -35,7 +38,6 @@ class _HuggingFaceIterableDatasetIterator(grain.DatasetIterator):
 
 
 class HuggingFaceIterableDataset(grain.IterDataset):
-    """Grain ``IterDataset`` backed by a HuggingFace ``IterableDataset``."""
 
     def __init__(self, dataset: tp.Any):
         super().__init__()
