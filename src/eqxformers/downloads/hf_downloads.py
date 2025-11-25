@@ -36,6 +36,7 @@ class DownloadConfig:
     split: str | None = None
     streaming: bool = False
     max_shard_size: str = "500MB"
+    num_shards: int | None = None
 
     hf_token: str | None = None
     dump_config: bool = False
@@ -151,7 +152,11 @@ def save_to_disk(cfg: DownloadConfig) -> str:
         num_proc=cfg.num_proc,
         streaming=False,
     )
-    dataset.save_to_disk(target_path, max_shard_size=cfg.max_shard_size, num_proc=cfg.num_proc)
+    dataset.save_to_disk(
+        target_path,
+        max_shard_size=cfg.max_shard_size,
+        num_shards = cfg.num_shards,
+    )
     logger.info("Saved dataset `%s` (revision `%s`) to %s", cfg.path, cfg.revision, target_path)
     return target_path
 

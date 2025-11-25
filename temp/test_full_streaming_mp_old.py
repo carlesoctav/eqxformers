@@ -1,0 +1,125 @@
+from datasets import load_dataset
+import argparse
+import os
+import sys
+import pyarrow
+import pyarrow.dataset
+import time
+import multiprocessing as mp
+from queue import Empty
+
+# Add parent directory to path to import eqxformers
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+from eqxformers.data.huggingface_datasets import HuggingFaceSourceIterableDataset
+
+
+def worker(worker_id: int, num_workers: int, data_dir: str, queue: mp.Queue, stop_event: mp.Event) -> None:
+    """Worker process that loads a shard of the dataset and sends rows to the queue."""
+    resolved_dir = os.path.expanduser(data_dir)
+
+    ds = load_dataset("parquet", data_dir=resolved_dir, streaming=True)["train"]
+    
+    # Wrap in HuggingFaceSourceIterableDataset and shard
+    hf_dataset = HuggingFaceSourceIterableDataset(ds)
+    ds_shard = hf_dataset.shard(num_shards=num_workers, index=worker_id)
+    print(f"Worker {worker_id}: Started loading shard {worker_id}/{num_workers}")
+
+    try:
+        for row in iter(ds_shard):
+            if stop_event.is_set():
+                break
+            queue.put((worker_id, row))
+        
+        # Signal this worker is done
+        queue.put((worker_id, None))
+        print(f"Worker {worker_id}: Finished processing shard")
+    except Exception as e:
+        print(f"Worker {worker_id}: Error - {e}")
+        queue.put((worker_id, None))
+
+
+def main(data_dir: str, report_every: int, num_workers: int) -> None:
+    print(f"Starting multiprocessing data loading with {num_workers} workers")
+    
+    # Create queue and processes
+    queue = mp.Queue(maxsize=num_workers * 1000)  # Buffer size per worker
+    stop_event = mp.Event()
+    
+    processes = []
+    for i in range(num_workers):
+        p = mp.Process(target=worker, args=(i, num_workers, data_dir, queue, stop_event))
+        p.start()
+        processes.append(p)
+    
+    start = time.time()
+    last_report = start
+    total_rows = 0
+    workers_finished = 0
+    
+    try:
+        while workers_finished < num_workers:
+            try:
+                worker_id, row = queue.get(timeout=1.0)
+                
+                if row is None:
+                    workers_finished += 1
+                    print(f"Worker {worker_id} finished ({workers_finished}/{num_workers})")
+                    continue
+                
+                total_rows += 1
+
+                if report_every and total_rows % report_every == 0:
+                    now = time.time()
+                    elapsed = now - start
+                    window_rate = report_every / (now - last_report) if now > last_report else 0.0
+                    avg_rate = total_rows / elapsed if elapsed else 0.0
+                    print(
+                        f"Progress: {total_rows:,} rows | avg {avg_rate:,.2f} rows/s | "
+                        f"recent {window_rate:,.2f} rows/s | elapsed {elapsed:,.1f}s"
+                    )
+                    last_report = now
+            except Empty:
+                continue
+                
+    except KeyboardInterrupt:
+        print("Interrupted by user. Stopping workers...")
+        stop_event.set()
+    finally:
+        # Clean up
+        stop_event.set()
+        for p in processes:
+            p.join(timeout=5)
+            if p.is_alive():
+                p.terminate()
+        
+        elapsed = time.time() - start
+        if total_rows:
+            avg_rate = total_rows / elapsed if elapsed else 0.0
+            print(f"Finished iterating {total_rows:,} rows in {elapsed:,.1f}s ({avg_rate:,.2f} rows/s avg)")
+        else:
+            print("No rows were processed.")
+
+
+if __name__ == "__main__":
+    mp.set_start_method('spawn', force=True)
+    
+    parser = argparse.ArgumentParser(description="Iterate a streaming dataset with multiprocessing and measure throughput.")
+    parser.add_argument("--data-dir", default="~/data/100BT", help="Path to the dataset directory (supports ~ expansion).")
+    parser.add_argument(
+        "--report-every",
+        type=int,
+        default=10_000,
+        help="Print a progress update every N rows (set to 0 to disable periodic logs).",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=4,
+        help="Number of worker processes for data loading.",
+    )
+    args = parser.parse_args()
+    main(
+        data_dir=args.data_dir,
+        report_every=args.report_every,
+        num_workers=args.num_workers,
+    )

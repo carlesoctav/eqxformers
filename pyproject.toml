@@ -9,10 +9,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "datasets==3.1.0",
+    "datasets",
     "draccus>=0.11.5",
     "equinox>=0.13.2",
     "flax>=0.12.0",
+    "gcsfs>=2024.9.0.post1",
     "grain>=0.2.13",
     "jax[tpu]>=0.8.0",
     "jaxtyping>=0.3.3",

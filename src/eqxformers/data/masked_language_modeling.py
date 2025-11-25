@@ -216,7 +216,7 @@ def masked_language_modeling_transforms(
     )
 
     operations = [
-        EnsureMapDataset(dataset_type=dataset_type),
+        # EnsureMapDataset(dataset_type=dataset_type),
         ToIterDataset(),
         random_transform,
     ]
