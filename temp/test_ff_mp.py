@@ -9,7 +9,7 @@ from grain.experimental import DatasetOptions, WithOptionsIterDataset
 
 # Add parent directory to path to import eqxformers
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-from eqxformers.data.huggingface_datasets import HuggingFaceSourceIterableDataset
+from eqxformers.data.huggingface_datasets import HuggingFaceSourceIterDataset
 
 
 def close_mp_it(it):

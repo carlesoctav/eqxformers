@@ -18,7 +18,7 @@ from eqxformers.data.masked_language_modeling import (
 )
 from eqxformers.data.masked_language_modeling import MLMBatch  # noqa: F401 - used for type clarity
 from eqxformers.data.dataset_transforms import BaseDatasetTransform
-from eqxformers.data.huggingface_datasets import HuggingFaceSourceIterableDataset
+from eqxformers.data.huggingface_datasets import HuggingFaceSourceIterDataset
 from grain.experimental import DatasetOptions, WithOptionsIterDataset
 
 
@@ -75,7 +75,7 @@ def main(args):
         fragment_scan_options=fragment_scan_options,
     )["train"]
 
-    ds = HuggingFaceSourceIterableDataset(ds)
+     ds = HuggingFaceSourceIterDataset(ds)
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer_name, use_fast=True, local_files_only=args.local_files_only

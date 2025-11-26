@@ -10,7 +10,7 @@ from queue import Empty
 
 # Add parent directory to path to import eqxformers
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-from eqxformers.data.huggingface_datasets import HuggingFaceSourceIterableDataset
+from eqxformers.data.huggingface_datasets import HuggingFaceSourceIterDataset
 
 
 def worker(worker_id: int, num_workers: int, data_dir: str, queue: mp.Queue, stop_event: mp.Event) -> None:
@@ -20,7 +20,7 @@ def worker(worker_id: int, num_workers: int, data_dir: str, queue: mp.Queue, sto
     ds = load_dataset("parquet", data_dir=resolved_dir, streaming=True)["train"]
     
     # Wrap in HuggingFaceSourceIterableDataset and shard
-    hf_dataset = HuggingFaceSourceIterableDataset(ds)
+    hf_dataset = HuggingFaceSourceIterDataset(ds)
     ds_shard = hf_dataset.shard(num_shards=num_workers, index=worker_id)
     print(f"Worker {worker_id}: Started loading shard {worker_id}/{num_workers}")
 

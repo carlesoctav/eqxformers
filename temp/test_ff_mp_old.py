@@ -8,7 +8,7 @@ from queue import Empty
 
 # Add parent directory to path to import eqxformers
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-from eqxformers.data.huggingface_datasets import HuggingFaceSourceIterableDataset
+from eqxformers.data.huggingface_datasets import HuggingFaceSourceIterDataset
 
 
 def worker(worker_id: int, num_workers: int, data_dir: str, queue: mp.Queue, stop_event: mp.Event) -> None:
@@ -19,7 +19,7 @@ def worker(worker_id: int, num_workers: int, data_dir: str, queue: mp.Queue, sto
     
     # Convert to iterable dataset and wrap in HuggingFaceSourceIterableDataset
     ds_iterable = ds.to_iterable_dataset()
-    hf_dataset = HuggingFaceSourceIterableDataset(ds_iterable)
+    hf_dataset = HuggingFaceSourceIterDataset(ds_iterable)
     
     # Shard the dataset for this worker
     ds_shard = hf_dataset.shard(num_shards=num_workers, index=worker_id)

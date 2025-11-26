@@ -11,7 +11,7 @@ from grain.experimental import DatasetOptions, WithOptionsIterDataset
 
 # Add parent directory to path to import eqxformers
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-from eqxformers.data.huggingface_datasets import HuggingFaceSourceIterableDataset
+from eqxformers.data.huggingface_datasets import HuggingFaceSourceIterDataset
 
 
 def close_mp_it(it):
@@ -56,7 +56,7 @@ def main(data_dir: str, report_every: int, num_workers: int, buffer_size: int) -
     )["train"]
     
     # Wrap in HuggingFaceSourceIterableDataset
-    hf_dataset = HuggingFaceSourceIterableDataset(ds)
+    hf_dataset = HuggingFaceSourceIterDataset(ds)
     # Force large min_shm_size so small arrays are copied, not put in shared memory.
     ds_with_options = WithOptionsIterDataset(
         hf_dataset,

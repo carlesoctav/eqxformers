@@ -2,7 +2,6 @@ import grain
 import warnings
 from datasets import IterableDataset
 
-
 class AlwaysFirst:
     pass
 
@@ -28,7 +27,7 @@ class _HuggingFaceSourceIterator(grain.DatasetIterator, AlwaysFirst):
         self._iterator = iter(self._dataset)
 
 
-class HuggingFaceSourceIterableDataset(grain.IterDataset, AlwaysFirst):
+class HuggingFaceSourceIterDataset(grain.IterDataset, AlwaysFirst):
 
     def __init__(
         self,
@@ -75,5 +74,5 @@ class HuggingFaceSourceIterableDataset(grain.IterDataset, AlwaysFirst):
         self,
         seed: int | None = None,
         buffer_size: int | None = 1000,
-    ) -> "HuggingFaceSourceIterableDataset":
-        return HuggingFaceSourceIterableDataset(self._source.shuffle(seed=seed, buffer_size = buffer_size))
+    ) -> "HuggingFaceSourceIterDataset":
+        return HuggingFaceSourceIterDataset(self._source.shuffle(seed=seed, buffer_size = buffer_size))

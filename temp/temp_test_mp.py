@@ -4,7 +4,7 @@ import os
 import multiprocessing as mp
 
 from grain.experimental import DatasetOptions, WithOptionsIterDataset
-from eqxformers.data.huggingface_datasets import HuggingFaceSourceIterableDataset
+from eqxformers.data.huggingface_datasets import HuggingFaceSourceIterDataset
 
 
 def close_mp_it(it):
@@ -44,7 +44,7 @@ def mp_alive(it) -> bool:
 if __name__ == "__main__":
     dataset = load_dataset("HuggingFaceFW/fineweb", streaming=True, split="train")
     ds = WithOptionsIterDataset(
-        HuggingFaceSourceIterableDataset(dataset),
+        HuggingFaceSourceIterDataset(dataset),
         DatasetOptions(min_shm_size=1 << 60),
     )
 
