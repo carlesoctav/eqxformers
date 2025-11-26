@@ -19,8 +19,11 @@ class Tokenize:
     tokenizer_path: str
     column: str = "messages"
 
+    def __post_init__(self):
+        self.tokenizer = None
+
     def map(self, data):
-        if not self.tokenizer:
+        if self.tokenizer is None:
             self.tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path)
         return len(self.tokenizer.apply_chat_template(data[self.column]))
 
@@ -38,6 +41,7 @@ def main(args):
     dataset = HuggingFaceSourceIterDataset(dataset)
     tokenize_fn = Tokenize(tokenizer_path=args.tokenizer, column=args.column)
     dataset = dataset.map(tokenize_fn)
+    dataset = dataset.filter(lambda x: x < 2000) 
 
     fast_ds = FastMultiprocessingIterDataset(
         dataset=dataset,
@@ -67,7 +71,7 @@ def main(args):
 
         series = pd.Series(counter)
         desc = series.describe()
-        print(f"DEBUGPRINT[16]: test_fast_mp_iter.py:256: desc={desc}")
+        print(f"DEBUGPRINT[20]: test_fast_mp_iter.py:73: desc={desc}")
     except KeyboardInterrupt:
         print("Interrupted.")
     finally:
